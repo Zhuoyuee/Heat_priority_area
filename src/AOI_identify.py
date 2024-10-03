@@ -1,57 +1,90 @@
 import rasterio
 import numpy as np
-from rasterio import mask
-
+from skimage.util import view_as_windows
 # Function to normalize raster values between 0 and 1
 def normalize(array):
     return (array - np.nanmin(array)) / (np.nanmax(array) - np.nanmin(array))
 
-def identify_AOI(lst_path, ndvi_path, height_path, window_size=100):
-    # Open the raster files
-    with rasterio.open(lst_path) as lst_raster, rasterio.open(ndvi_path) as ndvi_raster, rasterio.open(height_path) as height_raster:
-        lst = lst_raster.read(1)  # Land Surface Temperature
-        ndvi = ndvi_raster.read(1)  # NDVI
-        height = height_raster.read(1)  # Tree height
 
-        # Normalize the rasters layers
-        lst_norm = normalize(lst)
-        ndvi_norm = normalize(ndvi)
-        height_norm = normalize(height)
+def sliding_window_aggregate(array, window_size):
+    """
+    Apply a memory-efficient sliding window aggregation (mean) over the array.
 
-        # Apply criteria for severe urban heat: High LST, Low NDVI, Low Vegetation
-        heat_score = lst_norm + (1 - ndvi_norm) + (1 - height_norm)
+    Args:
+    - array: Input numpy array.
+    - window_size: Size of the sliding window (in pixels).
 
-        # Find the location of the maximum heat score
-        max_x, max_y = np.unravel_index(np.nanargmax(heat_score), heat_score.shape)
-        window = np.s_[max_x:max_x+window_size, max_y:max_y+window_size]
+    Returns:
+    - Aggregated numpy array of mean values.
+    """
+    rows, cols = array.shape
+    aggregated_result = np.zeros((rows - window_size + 1, cols - window_size + 1), dtype=np.float32)
 
-        # Calculate the bounding box in map coordinates
-        top_left = lst_raster.transform * (window[1].start, window[0].start)
-        bottom_right = lst_raster.transform * (window[1].stop, window[0].stop)
+    # Loop through each window in a memory-efficient way
+    for i in range(0, rows - window_size + 1):
+        for j in range(0, cols - window_size + 1):
+            # Extract the window and compute the mean
+            window = array[i:i + window_size, j:j + window_size]
+            aggregated_result[i, j] = np.nanmean(window)
 
-        bbox = {
-            "top_left": top_left,
-            "bottom_right": bottom_right
-        }
+    return aggregated_result
 
+
+def identify_AOI(lst, ndvi, height, metadata, target_km=2):
+    """
+    Identifies a 2km x 2km area with high LST, low NDVI, and low tree height using in-memory arrays.
+
+    Args:
+    - lst: NumPy array of LST (land surface temperature).
+    - ndvi: NumPy array of NDVI (vegetation index).
+    - height: NumPy array of tree height.
+    - metadata: Metadata dictionary containing the transform, resolution, crs, etc.
+    - target_km: The size of the AOI in kilometers (default is 2km x 2km).
+
+    Returns:
+    - bbox: A dictionary containing the top-left and bottom-right coordinates of the AOI.
+    """
+    # Extract metadata
+    transform = metadata['transform']
+    pixel_size_x, pixel_size_y = transform[0], abs(transform[4])  # Extract pixel size from transform
+
+    # Calculate the window size in pixels for a 2km x 2km area
+    window_size_x = int(target_km * 1000 / pixel_size_x)
+    window_size_y = int(target_km * 1000 / pixel_size_y)
+    window_size = min(window_size_x, window_size_y)  # Ensure square window
+
+    # Normalize the raster layers
+    lst_norm = normalize(lst)
+    ndvi_norm = normalize(ndvi)
+    height_norm = normalize(height)
+
+    # Apply criteria for severe urban heat: High LST, Low NDVI, Low Vegetation
+    heat_score = lst_norm + (1 - ndvi_norm) + (1 - height_norm)
+
+    # Apply a sliding window to compute the mean heat score over each 2km x 2km block
+    heat_aggregated = sliding_window_aggregate(heat_score, window_size)
+
+    # Find the window with the maximum aggregated heat score
+    max_window_x, max_window_y = np.unravel_index(np.nanargmax(heat_aggregated), heat_aggregated.shape)
+
+    # Convert the windowed indices back to the original raster coordinate space
+    min_x = max_window_x * window_size
+    min_y = max_window_y * window_size
+    max_x = min_x + window_size
+    max_y = min_y + window_size
+
+    # Calculate the bounding box in map coordinates using the affine transform
+    top_left = transform * (min_y, min_x)
+    bottom_right = transform * (max_y, max_x)
+
+    bbox = {
+        "top_left": top_left,
+        "bottom_right": bottom_right
+    }
+
+    print(bbox)
     return bbox
 
-def cropping(ahn4las, bbx):
-    # Define the bounding box
-    min_x, max_x = 181437.246002, 181937.246002
-    min_y, max_y = 318805.419006, 319305.419006
 
-    mask = ((las.x >= min_x) & (las.x <= max_x) & (las.y >= min_y) & (las.y <= max_y))
-
-    # Filter points based on the bounding box
-    cropped = laspy.create(point_format=las.header.point_format, file_version=las.header.version)
-    cropped.header = las.header  # Copy header information
-    cropped.points = las.points[mask]
-    print('Points from cropped data:', len(cropped.points))
-
-    # Write the cropped LAS file
-    cropped.write(out_las_file_path)
-    
-    return 0
 
 

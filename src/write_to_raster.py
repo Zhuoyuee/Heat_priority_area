@@ -1,3 +1,22 @@
+def cropping(ahn4las, bbx):
+    # Define the bounding box
+    min_x, max_x = 181437.246002, 181937.246002
+    min_y, max_y = 318805.419006, 319305.419006
+
+    mask = ((las.x >= min_x) & (las.x <= max_x) & (las.y >= min_y) & (las.y <= max_y))
+
+    # Filter points based on the bounding box
+    cropped = laspy.create(point_format=las.header.point_format, file_version=las.header.version)
+    cropped.header = las.header  # Copy header information
+    cropped.points = las.points[mask]
+    print('Points from cropped data:', len(cropped.points))
+
+    # Write the cropped LAS file
+    cropped.write(out_las_file_path)
+
+    return 0
+
+
 min_x, min_y, max_x, max_y = 181437.246002, 318805.419006, 181937.246002, 319305.419006
 cell_size = 1
 
